@@ -23,6 +23,14 @@ const defaults = {
 
 let state = null
 
+function migrateEntry(e) {
+  if (e.token !== undefined && !e.tokens) {
+    e.tokens = [{ playerName: '', token: e.token }]
+    delete e.token
+  }
+  if (!e.tokens) e.tokens = []
+}
+
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -31,6 +39,7 @@ function loadState() {
       for (const k of Object.keys(defaults)) {
         if (!(k in state)) state[k] = JSON.parse(JSON.stringify(defaults[k]))
       }
+      state.entries.forEach(migrateEntry)
       return
     }
   } catch {}
@@ -51,7 +60,7 @@ function uid() {
   return crypto.randomUUID()
 }
 
-function buildUrl(game, env, entry) {
+function buildUrl(game, env, entry, token) {
   const domain = env.domain || state.globalDomain
   const host = env.suffix
     ? `${game.name}${env.suffix}.${domain}`
@@ -59,10 +68,21 @@ function buildUrl(game, env, entry) {
   const params = new URLSearchParams({
     gameId: game.gameId,
     clientId: entry.clientId,
-    token: entry.token,
+    token: token.token,
     redirectUrl: entry.redirectUrl || state.globalRedirectUrl,
   })
   return `https://${host}/?${params}`
+}
+
+function buildLocalUrl(game, entry, token) {
+  const host = state.localUrl.replace(/^https?:\/\//, '')
+  const params = new URLSearchParams({
+    gameId: game.gameId,
+    clientId: entry.clientId,
+    token: token.token,
+    redirectUrl: entry.redirectUrl || state.globalRedirectUrl,
+  })
+  return `http://${host}/?${params}`
 }
 
 function esc(s) {
@@ -139,9 +159,11 @@ function importEntries(e) {
     try {
       const data = JSON.parse(ev.target.result)
       if (Array.isArray(data)) {
+        data.forEach(migrateEntry)
         setState(s => { s.entries = data })
         showToast('Entries imported!')
       } else if (data.entries) {
+        data.entries.forEach(migrateEntry)
         setState(s => { s.entries = data.entries })
         showToast('Entries imported!')
       } else {
@@ -206,7 +228,6 @@ function restoreCollapseState() {
       if (header) header.classList.toggle('collapsed', collapsed)
     }
   })
-  // purge stale entries from storage
   persistCollapseState()
 }
 
@@ -413,7 +434,6 @@ function renderSettingsContent() {
 function renderGamesContent() {
   const container = document.createElement('div')
 
-  // Add form
   const addForm = document.createElement('form')
   addForm.style.display = 'flex'
   addForm.style.gap = '8px'
@@ -554,6 +574,7 @@ function renderEnvsContent() {
 function renderEntriesContent() {
   const container = document.createElement('div')
 
+  // --- add form ---
   const addForm = document.createElement('form')
   addForm.style.display = 'flex'
   addForm.style.gap = '8px'
@@ -610,6 +631,21 @@ function renderEntriesContent() {
 
   clientGroup.append(clientLabel, newClientId)
 
+  const playerGroup = document.createElement('div')
+  playerGroup.style.flex = '1'
+  playerGroup.style.minWidth = '140px'
+  const playerLabel = document.createElement('div')
+  playerLabel.style.fontSize = '.8rem'
+  playerLabel.style.fontWeight = '600'
+  playerLabel.style.color = '#555'
+  playerLabel.style.marginBottom = '3px'
+  playerLabel.textContent = 'Player Name'
+
+  const newPlayerName = document.createElement('input')
+  newPlayerName.placeholder = 'Player Name (optional)'
+  newPlayerName.style.width = '100%'
+  playerGroup.append(playerLabel, newPlayerName)
+
   const tokenGroup = document.createElement('div')
   tokenGroup.style.flex = '1'
   tokenGroup.style.minWidth = '140px'
@@ -648,20 +684,28 @@ function renderEntriesContent() {
     e.preventDefault()
     const clientName = newClientName.value.trim()
     const clientId = newClientId.value.trim()
+    const playerName = newPlayerName.value.trim()
     const token = newToken.value.trim()
     const redirectUrl = newRedirect.value.trim()
     if (!clientId && !token) return
     setState(s => {
-      s.entries.push({ id: uid(), clientName, clientId, token, redirectUrl })
+      s.entries.push({
+        id: uid(),
+        clientName,
+        clientId,
+        tokens: [{ playerName, token }],
+        redirectUrl,
+      })
     })
     newClientName.value = ''
     newClientId.value = ''
+    newPlayerName.value = ''
     newToken.value = ''
     newRedirect.value = ''
     newClientName.focus()
   }
 
-  addForm.append(nameGroup, clientGroup, tokenGroup, redirectGroup, addBtn)
+  addForm.append(nameGroup, clientGroup, playerGroup, tokenGroup, redirectGroup, addBtn)
   container.appendChild(addForm)
 
   if (state.entries.length === 0) {
@@ -692,14 +736,13 @@ function renderEntry(entry) {
   const body = document.createElement('div')
   body.className = 'collapsible-body'
 
-  // entry editable fields
+  // entry-level editable fields
   const fieldsDiv = document.createElement('div')
   fieldsDiv.className = 'entry-fields'
 
   const fConfig = [
     { label: 'Client Name', value: entry.clientName || '', field: 'clientName', id: entry.id },
     { label: 'Client ID', value: entry.clientId, field: 'clientId', id: entry.id },
-    { label: 'Token', value: entry.token, field: 'token', id: entry.id },
     { label: 'Redirect URL', value: entry.redirectUrl, field: 'redirectUrl', id: entry.id },
   ]
 
@@ -733,18 +776,19 @@ function renderEntry(entry) {
           e.preventDefault()
           const parsed = new URL(text)
           inp.value = parsed.searchParams.get('clientId') || ''
-          const inpToken = div.parentElement.querySelectorAll('.field input')[2]
-          const inpRedirect = div.parentElement.querySelectorAll('.field input')[3]
-          if (inpToken) inpToken.value = parsed.searchParams.get('token') || ''
-          if (inpRedirect) inpRedirect.value = parsed.searchParams.get('redirectUrl') || ''
           const e2 = state.entries.find(x => x.id === entry.id)
           if (e2) {
             e2.clientId = inp.value
-            e2.token = inpToken ? inpToken.value : ''
-            e2.redirectUrl = inpRedirect ? inpRedirect.value : ''
+            const extToken = parsed.searchParams.get('token') || ''
+            const extRedirect = parsed.searchParams.get('redirectUrl') || ''
+            e2.redirectUrl = extRedirect
+            if (e2.tokens.length > 0) {
+              e2.tokens[0].token = extToken
+            } else {
+              e2.tokens.push({ playerName: '', token: extToken })
+            }
           }
-          saveState()
-          syncUrls()
+          setState(() => {})
           showToast('Fields extracted from URL!')
         } catch { /* not a url */ }
       }
@@ -765,16 +809,39 @@ function renderEntry(entry) {
   fieldsDiv.appendChild(delBtn)
   body.appendChild(fieldsDiv)
 
-  // local url group (first, if configured)
-  if (state.localUrl) {
-    const localGroup = renderLocalUrlGroup(entry)
-    localGroup.classList.add('local-group')
-    body.appendChild(localGroup)
+  // --- token add form ---
+  const tokenAddForm = document.createElement('form')
+  tokenAddForm.className = 'token-add-form'
+  tokenAddForm.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;align-items:flex-end'
+
+  const tokenPlayerInp = document.createElement('input')
+  tokenPlayerInp.placeholder = 'Player Name (optional)'
+  tokenPlayerInp.style.flex = '1'
+
+  const tokenTokenInp = document.createElement('input')
+  tokenTokenInp.placeholder = 'Token'
+  tokenTokenInp.style.flex = '1'
+
+  const tokenAddBtn = document.createElement('button')
+  tokenAddBtn.className = 'btn btn-primary'
+  tokenAddBtn.textContent = 'Add Token'
+  tokenAddForm.onsubmit = (e) => {
+    e.preventDefault()
+    const playerName = tokenPlayerInp.value.trim()
+    const token = tokenTokenInp.value.trim()
+    if (!token) return
+    setState(s => {
+      const e2 = s.entries.find(x => x.id === entry.id)
+      if (e2) e2.tokens.push({ playerName, token })
+    })
   }
 
-  // env sub-groups
-  state.envs.forEach((env, envIdx) => {
-    body.appendChild(renderEnvGroup(entry, env, envIdx))
+  tokenAddForm.append(tokenPlayerInp, tokenTokenInp, tokenAddBtn)
+  body.appendChild(tokenAddForm)
+
+  // --- token collapsibles ---
+  entry.tokens.forEach((token, tokenIdx) => {
+    body.appendChild(renderTokenGroup(entry, token, tokenIdx))
   })
 
   wrapper.appendChild(body)
@@ -782,29 +849,100 @@ function renderEntry(entry) {
   return wrapper
 }
 
-function buildLocalUrl(game, entry) {
-  const host = state.localUrl.replace(/^https?:\/\//, '')
-  const params = new URLSearchParams({
-    gameId: game.gameId,
-    clientId: entry.clientId,
-    token: entry.token,
-    redirectUrl: entry.redirectUrl || state.globalRedirectUrl,
+function renderTokenGroup(entry, token, tokenIdx) {
+  const wrapper = document.createElement('div')
+  wrapper.className = 'collapsible token-group'
+  wrapper.dataset.collapseId = entry.id + '-t-' + tokenIdx
+
+  const header = document.createElement('div')
+  header.className = 'collapsible-header collapsed'
+  const playerPart = token.playerName ? esc(token.playerName) + ' ' : ''
+  const tokenPart = token.token
+    ? `<span class="client-id-code">${esc(token.token)}</span>`
+    : '<span class="client-id-code">(no token)</span>'
+  header.innerHTML = `<span class="caret">▼</span> ${playerPart}${tokenPart}`
+  wrapper.appendChild(header)
+
+  const body = document.createElement('div')
+  body.className = 'collapsible-body'
+
+  // token inline fields
+  const fieldsDiv = document.createElement('div')
+  fieldsDiv.className = 'entry-fields'
+
+  const fConfig = [
+    { label: 'Player Name', value: token.playerName || '', field: 'playerName' },
+    { label: 'Token', value: token.token, field: 'token' },
+  ]
+
+  fConfig.forEach(f => {
+    const div = document.createElement('div')
+    div.className = 'field'
+    const label = document.createElement('label')
+    label.textContent = f.label
+    const inp = document.createElement('input')
+    inp.type = 'text'
+    inp.value = f.value
+    inp.title = f.label
+    inp.oninput = () => {
+      const e = state.entries.find(x => x.id === entry.id)
+      if (e && e.tokens[tokenIdx]) {
+        e.tokens[tokenIdx][f.field] = inp.value
+        saveState()
+        syncUrls()
+      }
+    }
+    div.append(label, inp)
+    fieldsDiv.appendChild(div)
   })
-  return `http://${host}/?${params}`
+
+  const delBtn = document.createElement('button')
+  delBtn.className = 'btn-icon'
+  delBtn.textContent = '✕'
+  delBtn.title = 'Delete Token'
+  delBtn.style.alignSelf = 'flex-end'
+  delBtn.onclick = () => {
+    if (!confirm('Delete this token?')) return
+    setState(s => {
+      const e2 = s.entries.find(x => x.id === entry.id)
+      if (e2) e2.tokens.splice(tokenIdx, 1)
+    })
+  }
+  fieldsDiv.appendChild(delBtn)
+  body.appendChild(fieldsDiv)
+
+  // local url group (first, if configured)
+  if (state.localUrl) {
+    const localGroup = renderLocalUrlGroup(entry, token, tokenIdx)
+    localGroup.classList.add('local-group')
+    body.appendChild(localGroup)
+  }
+
+  // env sub-groups
+  state.envs.forEach((env, envIdx) => {
+    body.appendChild(renderEnvGroup(entry, token, tokenIdx, env, envIdx))
+  })
+
+  wrapper.appendChild(body)
+  header.onclick = () => toggleCollapsed(header)
+  return wrapper
 }
 
 function toggleLocalGroups() {
-  document.querySelectorAll('.collapsible-body > .entry-fields').forEach(fieldsDiv => {
-    const body = fieldsDiv.parentElement
+  document.querySelectorAll('.collapsible.token-group').forEach(el => {
+    const body = el.querySelector('.collapsible-body')
     if (!body) return
     const existing = body.querySelector(':scope > .collapsible.local-group')
     if (state.localUrl) {
       if (existing) return
-      const card = body.closest('.collapsible[data-collapse-id]')
-      if (!card) return
-      const entry = state.entries.find(e => e.id === card.dataset.collapseId)
-      if (!entry) return
-      const group = renderLocalUrlGroup(entry)
+      const collapseId = el.dataset.collapseId
+      const m = collapseId.match(/^(.+)-t-(\d+)$/)
+      if (!m) return
+      const entryId = m[1]
+      const tokenIdx = +m[2]
+      const entry = state.entries.find(e => e.id === entryId)
+      if (!entry || !entry.tokens[tokenIdx]) return
+      const group = renderLocalUrlGroup(entry, entry.tokens[tokenIdx], tokenIdx)
       group.classList.add('local-group')
       body.insertBefore(group, body.querySelector(':scope > .collapsible'))
     } else {
@@ -813,9 +951,10 @@ function toggleLocalGroups() {
   })
 }
 
-function renderLocalUrlGroup(entry) {
+function renderLocalUrlGroup(entry, token, tokenIdx) {
   const wrapper = document.createElement('div')
   wrapper.className = 'collapsible'
+  wrapper.dataset.collapseId = entry.id + '-t-' + tokenIdx + '-local'
 
   const header = document.createElement('div')
   header.className = 'collapsible-header collapsed'
@@ -835,8 +974,9 @@ function renderLocalUrlGroup(entry) {
     row.dataset.gameIdx = gameIdx
     row.dataset.envIdx = '-2'
     row.dataset.entryId = entry.id
+    row.dataset.tokenIdx = tokenIdx
 
-    const url = buildLocalUrl(game, entry)
+    const url = buildLocalUrl(game, entry, token)
     const link = document.createElement('a')
     link.href = url
     link.target = '_blank'
@@ -860,10 +1000,10 @@ function renderLocalUrlGroup(entry) {
   return wrapper
 }
 
-function renderEnvGroup(entry, env, envIdx) {
+function renderEnvGroup(entry, token, tokenIdx, env, envIdx) {
   const wrapper = document.createElement('div')
   wrapper.className = 'collapsible'
-  wrapper.dataset.collapseId = entry.id + '-env-' + envIdx
+  wrapper.dataset.collapseId = entry.id + '-t-' + tokenIdx + '-env-' + envIdx
 
   const header = document.createElement('div')
   header.className = 'collapsible-header collapsed'
@@ -877,7 +1017,7 @@ function renderEnvGroup(entry, env, envIdx) {
   state.games.forEach((game, gameIdx) => {
     if (!game.name && !game.gameId) return
     hasUrls = true
-    body.appendChild(renderUrlRow(game, gameIdx, entry, env, envIdx))
+    body.appendChild(renderUrlRow(game, gameIdx, entry, token, tokenIdx, env, envIdx))
   })
 
   if (!hasUrls) {
@@ -889,14 +1029,15 @@ function renderEnvGroup(entry, env, envIdx) {
   return wrapper
 }
 
-function renderUrlRow(game, gameIdx, entry, env, envIdx) {
+function renderUrlRow(game, gameIdx, entry, token, tokenIdx, env, envIdx) {
   const row = document.createElement('div')
   row.className = 'url-row'
   row.dataset.gameIdx = gameIdx
   row.dataset.envIdx = envIdx
   row.dataset.entryId = entry.id
+  row.dataset.tokenIdx = tokenIdx
 
-  const url = buildUrl(game, env, entry)
+  const url = buildUrl(game, env, entry, token)
 
   const link = document.createElement('a')
   link.href = url
@@ -919,19 +1060,21 @@ function syncUrls() {
     const gameIdx = +row.dataset.gameIdx
     const envIdx = +row.dataset.envIdx
     const entryId = row.dataset.entryId
+    const tokenIdx = +row.dataset.tokenIdx
     const entry = state.entries.find(e => e.id === entryId)
-    if (!entry) return
+    const token = entry?.tokens?.[tokenIdx]
+    if (!entry || !token) return
 
     let url
     if (envIdx === -2) {
       const game = state.games[gameIdx]
       if (!game) return
-      url = buildLocalUrl(game, entry)
+      url = buildLocalUrl(game, entry, token)
     } else {
       const game = state.games[gameIdx]
       const env = state.envs[envIdx]
       if (!game || !env) return
-      url = buildUrl(game, env, entry)
+      url = buildUrl(game, env, entry, token)
     }
 
     const link = row.querySelector('a')
@@ -944,7 +1087,28 @@ function syncUrls() {
   // update entry headers (clientName / clientId may have changed)
   document.querySelectorAll('.collapsible[data-collapse-id]').forEach(el => {
     const entry = state.entries.find(e => e.id === el.dataset.collapseId)
-    if (!entry) return
+    if (!entry) {
+      // maybe a token header
+      const m = el.dataset.collapseId.match(/^(.+)-t-(\d+)$/)
+      if (!m) return
+      const tokenEntry = state.entries.find(e => e.id === m[1])
+      if (!tokenEntry) return
+      const tokenIdx = +m[2]
+      const token = tokenEntry.tokens?.[tokenIdx]
+      if (!token) return
+      const header = el.querySelector('.collapsible-header')
+      if (!header) return
+      const caret = header.querySelector('.caret')
+      if (!caret) return
+      const playerPart = token.playerName ? esc(token.playerName) + ' ' : ''
+      const tokenPart = token.token
+        ? `<span class="client-id-code">${esc(token.token)}</span>`
+        : '<span class="client-id-code">(no token)</span>'
+      header.innerHTML = ''
+      header.appendChild(caret)
+      header.insertAdjacentHTML('beforeend', ' ' + playerPart + tokenPart)
+      return
+    }
     const header = el.querySelector('.collapsible-header')
     if (!header) return
     const caret = header.querySelector('.caret')

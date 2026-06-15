@@ -369,6 +369,14 @@ input.client-id-code {
   font-size: .9rem;
 }
 
+.token-group {
+  margin-left: 12px;
+}
+
+.token-add-form {
+  margin-left: 12px;
+}
+
 @media (max-width: 768px) {
   .layout { flex-direction: column; }
   .sidebar { width: 100%; position: static; }
