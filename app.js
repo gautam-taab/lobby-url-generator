@@ -60,6 +60,15 @@ function uid() {
   return crypto.randomUUID()
 }
 
+function truncateToken(t) {
+  if (!t || t.length <= 15) return esc(t)
+  const first = t.slice(0, 5)
+  const last = t.slice(-5)
+  const interior = t.length - 10
+  const mid = t.slice(5 + Math.floor((interior - 5) / 2), 5 + Math.floor((interior - 5) / 2) + 5)
+  return esc(first) + '...' + esc(mid) + '...' + esc(last)
+}
+
 function buildUrl(game, env, entry, token) {
   const domain = env.domain || state.globalDomain
   const host = env.suffix
@@ -819,8 +828,20 @@ function renderEntry(entry) {
   tokenPlayerInp.style.flex = '1'
 
   const tokenTokenInp = document.createElement('input')
-  tokenTokenInp.placeholder = 'Token'
+  tokenTokenInp.placeholder = 'Token or Lobby URL'
   tokenTokenInp.style.flex = '1'
+  tokenTokenInp.onpaste = (e) => {
+    const text = (e.clipboardData || window.clipboardData).getData('text')
+    if (!text) return
+    try {
+      new URL(text)
+      e.preventDefault()
+      const parsed = new URL(text)
+      const token = parsed.searchParams.get('token') || ''
+      tokenTokenInp.value = token
+      showToast('Token extracted from URL!')
+    } catch { /* not a URL */ }
+  }
 
   const tokenAddBtn = document.createElement('button')
   tokenAddBtn.className = 'btn btn-primary'
@@ -857,10 +878,10 @@ function renderTokenGroup(entry, token, tokenIdx) {
   const header = document.createElement('div')
   header.className = 'collapsible-header collapsed'
   const playerPart = token.playerName ? esc(token.playerName) + ' ' : ''
-  const tokenPart = token.token
-    ? `<span class="client-id-code">${esc(token.token)}</span>`
+  const tokenDisplay = token.token
+    ? `<span class="client-id-code" title="${esc(token.token)}">${truncateToken(token.token)}</span>`
     : '<span class="client-id-code">(no token)</span>'
-  header.innerHTML = `<span class="caret">▼</span> ${playerPart}${tokenPart}`
+  header.innerHTML = `<span class="caret">▼</span> ${playerPart}${tokenDisplay}`
   wrapper.appendChild(header)
 
   const body = document.createElement('div')
@@ -1101,12 +1122,12 @@ function syncUrls() {
       const caret = header.querySelector('.caret')
       if (!caret) return
       const playerPart = token.playerName ? esc(token.playerName) + ' ' : ''
-      const tokenPart = token.token
-        ? `<span class="client-id-code">${esc(token.token)}</span>`
+      const tokenDisplay = token.token
+        ? `<span class="client-id-code" title="${esc(token.token)}">${truncateToken(token.token)}</span>`
         : '<span class="client-id-code">(no token)</span>'
       header.innerHTML = ''
       header.appendChild(caret)
-      header.insertAdjacentHTML('beforeend', ' ' + playerPart + tokenPart)
+      header.insertAdjacentHTML('beforeend', ' ' + playerPart + tokenDisplay)
       return
     }
     const header = el.querySelector('.collapsible-header')
