@@ -90,7 +90,7 @@ function initEditable(span, initialValue, saveFn) {
     const input = document.createElement('input')
     input.type = 'text'
     input.value = v
-    input.style.width = Math.max(v.length * 0.7 * 8, 60) + 'px'
+    input.style.width = Math.max(v.length * 9 + 20, 100) + 'px'
     input.style.padding = '2px 6px'
     input.style.fontSize = 'inherit'
     input.style.fontFamily = 'inherit'
@@ -224,11 +224,15 @@ function importEntries(e) {
       const data = JSON.parse(ev.target.result)
       if (Array.isArray(data)) {
         data.forEach(migrateEntry)
-        setState(s => { s.entries = data })
+        state.entries = data
+        saveState()
+        render()
         showToast('Entries imported!')
       } else if (data.entries) {
         data.entries.forEach(migrateEntry)
-        setState(s => { s.entries = data.entries })
+        state.entries = data.entries
+        saveState()
+        render()
         showToast('Entries imported!')
       } else {
         showToast('Invalid entries file')
@@ -478,10 +482,10 @@ function renderSettingsContent() {
   localInput.oninput = () => {
     const wasEmpty = !state.localUrl
     state.localUrl = localInput.value
-    saveState()
     if (wasEmpty !== !state.localUrl) {
-      toggleLocalGroups()
+      setState(() => {})
     } else {
+      saveState()
       syncUrls()
     }
   }
@@ -756,14 +760,14 @@ function renderEntriesContent() {
       const existing = s.entries.find(e => e.clientId === clientId)
       if (existing) {
         if (!existing.tokens.some(t => t.token === token)) {
-          existing.tokens.push({ playerName, token })
+          existing.tokens.push({ playerName: playerName || nextPlayerName(existing.id), token })
         }
       } else {
         s.entries.push({
           id: uid(),
           clientName,
           clientId,
-          tokens: [{ playerName, token }],
+          tokens: [{ playerName: playerName || 'player1', token }],
           redirectUrl,
         })
       }
@@ -804,8 +808,8 @@ function renderEntry(entry) {
   header.appendChild(caret)
 
   const nameSpan = document.createElement('span')
-  nameSpan.textContent = entry.clientName || '(no name)'
-  initEditable(nameSpan, entry.clientName || '', (val) => {
+  nameSpan.textContent = entry.clientName
+  initEditable(nameSpan, entry.clientName, (val) => {
     const e = state.entries.find(x => x.id === entry.id)
     if (e) { e.clientName = val; saveState() }
   })
@@ -901,8 +905,8 @@ function renderTokenGroup(entry, token, tokenIdx) {
   header.appendChild(caret)
 
   const nameSpan = document.createElement('span')
-  nameSpan.textContent = token.playerName || '(no name)'
-  initEditable(nameSpan, token.playerName || '', (val) => {
+  nameSpan.textContent = token.playerName
+  initEditable(nameSpan, token.playerName, (val) => {
     const e = state.entries.find(x => x.id === entry.id)
     if (e && e.tokens[tokenIdx]) { e.tokens[tokenIdx].playerName = val; saveState() }
   })
@@ -934,88 +938,67 @@ function renderTokenGroup(entry, token, tokenIdx) {
   const body = document.createElement('div')
   body.className = 'collapsible-body'
 
-  // local url group (first, if configured)
-  if (state.localUrl) {
-    const localGroup = renderLocalUrlGroup(entry, token, tokenIdx)
-    localGroup.classList.add('local-group')
-    body.appendChild(localGroup)
-  }
+  // game columns: env list below each game name
+  const envList = state.localUrl
+    ? [...state.envs, { name: 'Local', suffix: '', domain: '', _local: true }]
+    : state.envs
 
-  // env sub-groups
-  state.envs.forEach((env, envIdx) => {
-    body.appendChild(renderEnvGroup(entry, token, tokenIdx, env, envIdx))
-  })
+  if (state.games.length === 0 || envList.length === 0) {
+    body.appendChild(emptyMsg('No games or environments configured.'))
+  } else {
+    const bar = document.createElement('div')
+    bar.className = 'game-bar'
 
-  wrapper.appendChild(body)
-  header.onclick = () => toggleCollapsed(header)
-  return wrapper
-}
+    state.games.forEach((game, gameIdx) => {
+      if (!game.name && !game.gameId) return
 
-function toggleLocalGroups() {
-  document.querySelectorAll('.collapsible.token-group').forEach(el => {
-    const body = el.querySelector('.collapsible-body')
-    if (!body) return
-    const existing = body.querySelector(':scope > .collapsible.local-group')
-    if (state.localUrl) {
-      if (existing) return
-      const collapseId = el.dataset.collapseId
-      const m = collapseId.match(/^(.+)-t-(\d+)$/)
-      if (!m) return
-      const entryId = m[1]
-      const tokenIdx = +m[2]
-      const entry = state.entries.find(e => e.id === entryId)
-      if (!entry || !entry.tokens[tokenIdx]) return
-      const group = renderLocalUrlGroup(entry, entry.tokens[tokenIdx], tokenIdx)
-      group.classList.add('local-group')
-      body.insertBefore(group, body.querySelector(':scope > .collapsible'))
-    } else {
-      if (existing) existing.remove()
-    }
-  })
-}
+      const col = document.createElement('div')
+      col.className = 'game-col'
 
-function renderLocalUrlGroup(entry, token, tokenIdx) {
-  const wrapper = document.createElement('div')
-  wrapper.className = 'collapsible'
-  wrapper.dataset.collapseId = entry.id + '-t-' + tokenIdx + '-local'
+      const header = document.createElement('div')
+      header.className = 'game-col-header'
+      header.textContent = game.name || '?'
+      col.appendChild(header)
 
-  const header = document.createElement('div')
-  header.className = 'collapsible-header collapsed'
-  header.innerHTML = `<span class="caret">▼</span> Local`
-  wrapper.appendChild(header)
+      envList.forEach((env, colIdx) => {
+        const isLocal = env._local
+        const envIdx = isLocal ? -2 : colIdx
+        const url = isLocal
+          ? buildLocalUrl(game, entry, token)
+          : buildUrl(game, state.envs[colIdx], entry, token)
 
-  const body = document.createElement('div')
-  body.className = 'collapsible-body'
+        const row = document.createElement('div')
+        row.className = 'game-env-row'
+        row.dataset.url = url
+        row.dataset.gameIdx = gameIdx
+        row.dataset.envIdx = envIdx
+        row.dataset.entryId = entry.id
+        row.dataset.tokenIdx = tokenIdx
 
-  let hasUrls = false
-  state.games.forEach((game, gameIdx) => {
-    if (!game.name && !game.gameId) return
-    hasUrls = true
+        const link = document.createElement('a')
+        link.href = url
+        link.target = '_blank'
+        link.className = 'env-link'
+        link.textContent = env.name
 
-    const row = document.createElement('div')
-    row.className = 'url-row'
-    row.dataset.gameIdx = gameIdx
-    row.dataset.envIdx = '-2'
-    row.dataset.entryId = entry.id
-    row.dataset.tokenIdx = tokenIdx
+        const copyBtn = document.createElement('button')
+        copyBtn.className = 'btn-icon btn-copy'
+        copyBtn.title = 'Copy URL'
+        copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
+        copyBtn.onclick = (e) => {
+          e.stopPropagation()
+          const u = row.dataset.url
+          if (u) copyUrl(u)
+        }
 
-    const url = buildLocalUrl(game, entry, token)
-    const link = document.createElement('a')
-    link.href = url
-    link.target = '_blank'
-    link.textContent = url
+        row.append(link, copyBtn)
+        col.appendChild(row)
+      })
 
-    const copyBtn = document.createElement('button')
-    copyBtn.className = 'btn btn-sm'
-    copyBtn.textContent = 'Copy'
-    copyBtn.onclick = (e) => { e.stopPropagation(); copyUrl(url) }
+      bar.appendChild(col)
+    })
 
-    row.append(link, copyBtn)
-    body.appendChild(row)
-  })
-
-  if (!hasUrls) {
-    body.appendChild(emptyMsg('No games configured.'))
+    body.appendChild(bar)
   }
 
   wrapper.appendChild(body)
@@ -1023,88 +1006,32 @@ function renderLocalUrlGroup(entry, token, tokenIdx) {
   return wrapper
 }
 
-function renderEnvGroup(entry, token, tokenIdx, env, envIdx) {
-  const wrapper = document.createElement('div')
-  wrapper.className = 'collapsible'
-  wrapper.dataset.collapseId = entry.id + '-t-' + tokenIdx + '-env-' + envIdx
-
-  const header = document.createElement('div')
-  header.className = 'collapsible-header collapsed'
-  header.innerHTML = `<span class="caret">▼</span> ${esc(env.name)}`
-  wrapper.appendChild(header)
-
-  const body = document.createElement('div')
-  body.className = 'collapsible-body'
-
-  let hasUrls = false
-  state.games.forEach((game, gameIdx) => {
-    if (!game.name && !game.gameId) return
-    hasUrls = true
-    body.appendChild(renderUrlRow(game, gameIdx, entry, token, tokenIdx, env, envIdx))
-  })
-
-  if (!hasUrls) {
-    body.appendChild(emptyMsg('No games configured.'))
-  }
-
-  wrapper.appendChild(body)
-  header.onclick = () => toggleCollapsed(header)
-  return wrapper
-}
-
-function renderUrlRow(game, gameIdx, entry, token, tokenIdx, env, envIdx) {
-  const row = document.createElement('div')
-  row.className = 'url-row'
-  row.dataset.gameIdx = gameIdx
-  row.dataset.envIdx = envIdx
-  row.dataset.entryId = entry.id
-  row.dataset.tokenIdx = tokenIdx
-
-  const url = buildUrl(game, env, entry, token)
-
-  const link = document.createElement('a')
-  link.href = url
-  link.target = '_blank'
-  link.textContent = url
-
-  const copyBtn = document.createElement('button')
-  copyBtn.className = 'btn btn-sm'
-  copyBtn.textContent = 'Copy'
-  copyBtn.onclick = (e) => { e.stopPropagation(); copyUrl(url) }
-
-  row.append(link, copyBtn)
-  return row
-}
 
 // --- sync urls (lightweight, no full re-render) ---
 
 function syncUrls() {
-  document.querySelectorAll('.url-row').forEach(row => {
+  document.querySelectorAll('.game-env-row').forEach(row => {
     const gameIdx = +row.dataset.gameIdx
     const envIdx = +row.dataset.envIdx
     const entryId = row.dataset.entryId
     const tokenIdx = +row.dataset.tokenIdx
     const entry = state.entries.find(e => e.id === entryId)
     const token = entry?.tokens?.[tokenIdx]
-    if (!entry || !token) return
+    const game = state.games[gameIdx]
+    if (!entry || !token || !game) return
 
     let url
     if (envIdx === -2) {
-      const game = state.games[gameIdx]
-      if (!game) return
       url = buildLocalUrl(game, entry, token)
     } else {
-      const game = state.games[gameIdx]
       const env = state.envs[envIdx]
-      if (!game || !env) return
+      if (!env) return
       url = buildUrl(game, env, entry, token)
     }
 
-    const link = row.querySelector('a')
-    if (link) {
-      link.href = url
-      link.textContent = url
-    }
+    row.dataset.url = url
+    const link = row.querySelector('.env-link')
+    if (link) link.href = url
   })
 }
 
