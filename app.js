@@ -1,0 +1,811 @@
+const STORAGE_KEY = 'lobbyUrlConfig'
+
+const defaults = {
+  globalDomain: 'taabplay.com',
+  globalRedirectUrl: 'https://taabplay.com',
+  games: [
+    { name: 'wicketcrash', gameId: '726418392' },
+    { name: 'dicemaster', gameId: '519372845' },
+    { name: 'soccercrash', gameId: '604839217' },
+    { name: 'zombiecrash', gameId: '710439218' },
+    { name: 'dragondice', gameId: '710439217' },
+    { name: 'horsecrash', gameId: '710439219' },
+    { name: 'formulaone', gameId: '710439220' },
+  ],
+  envs: [
+    { name: 'dev', suffix: '-dev', domain: '' },
+    { name: 'staging', suffix: '-staging', domain: '' },
+    { name: 'production', suffix: '', domain: '' },
+  ],
+  entries: [],
+}
+
+let state = null
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw) {
+      state = JSON.parse(raw)
+      for (const k of Object.keys(defaults)) {
+        if (!(k in state)) state[k] = JSON.parse(JSON.stringify(defaults[k]))
+      }
+      return
+    }
+  } catch {}
+  state = JSON.parse(JSON.stringify(defaults))
+}
+
+function saveState() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+}
+
+function setState(fn) {
+  fn(state)
+  saveState()
+  render()
+}
+
+function uid() {
+  return crypto.randomUUID()
+}
+
+function buildUrl(game, env, entry) {
+  const domain = env.domain || state.globalDomain
+  const host = env.suffix
+    ? `${game.name}${env.suffix}.${domain}`
+    : `${game.name}.${domain}`
+  const params = new URLSearchParams({
+    gameId: game.gameId,
+    clientId: entry.clientId,
+    token: entry.token,
+    redirectUrl: entry.redirectUrl || state.globalRedirectUrl,
+  })
+  return `https://${host}/?${params}`
+}
+
+function esc(s) {
+  const div = document.createElement('div')
+  div.textContent = s
+  return div.innerHTML
+}
+
+// --- copy toast ---
+
+let toastTimer = null
+
+function showToast(msg) {
+  let toast = document.getElementById('toast')
+  if (!toast) {
+    toast = document.createElement('div')
+    toast.id = 'toast'
+    toast.className = 'copy-toast'
+    document.body.appendChild(toast)
+  }
+  toast.textContent = msg
+  toast.classList.add('visible')
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => toast.classList.remove('visible'), 1500)
+}
+
+function copyUrl(url) {
+  navigator.clipboard.writeText(url).then(() => showToast('Copied!')).catch(() => showToast('Failed to copy'))
+}
+
+// --- import / export ---
+
+function exportSettings() {
+  const payload = { globalDomain: state.globalDomain, globalRedirectUrl: state.globalRedirectUrl, games: state.games, envs: state.envs }
+  downloadJson(payload, 'lobby-settings.json')
+}
+
+function importSettings(e) {
+  const file = e.target.files[0]
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = (ev) => {
+    try {
+      const data = JSON.parse(ev.target.result)
+      if (data.games && data.envs) {
+        setState(s => {
+          s.globalDomain = data.globalDomain ?? defaults.globalDomain
+          s.globalRedirectUrl = data.globalRedirectUrl ?? ''
+          s.games = data.games
+          s.envs = data.envs
+        })
+        showToast('Settings imported!')
+      } else {
+        showToast('Invalid settings file')
+      }
+    } catch {
+      showToast('Invalid JSON file')
+    }
+  }
+  reader.readAsText(file)
+  e.target.value = ''
+}
+
+function exportEntries() {
+  downloadJson(state.entries, 'lobby-entries.json')
+}
+
+function importEntries(e) {
+  const file = e.target.files[0]
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = (ev) => {
+    try {
+      const data = JSON.parse(ev.target.result)
+      if (Array.isArray(data)) {
+        setState(s => { s.entries = data })
+        showToast('Entries imported!')
+      } else if (data.entries) {
+        setState(s => { s.entries = data.entries })
+        showToast('Entries imported!')
+      } else {
+        showToast('Invalid entries file')
+      }
+    } catch {
+      showToast('Invalid JSON file')
+    }
+  }
+  reader.readAsText(file)
+  e.target.value = ''
+}
+
+function downloadJson(obj, filename) {
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const blob = new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename.replace('.json', `-${ts}.json`)
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// --- rendering ---
+
+let collapseState = {}
+
+function saveCollapseState() {
+  collapseState = {}
+  document.querySelectorAll('[data-collapse-id]').forEach(el => {
+    const header = el.querySelector('.collapsible-header')
+    if (header) collapseState[el.dataset.collapseId] = header.classList.contains('collapsed')
+  })
+}
+
+function restoreCollapseState() {
+  Object.entries(collapseState).forEach(([id, collapsed]) => {
+    const el = document.querySelector(`[data-collapse-id="${CSS.escape(id)}"]`)
+    if (el) {
+      const header = el.querySelector('.collapsible-header')
+      if (header) header.classList.toggle('collapsed', collapsed)
+    }
+  })
+}
+
+function render() {
+  saveCollapseState()
+  const app = document.getElementById('app')
+  app.innerHTML = ''
+
+  app.appendChild(renderBar())
+
+  const layout = document.createElement('div')
+  layout.className = 'layout'
+
+  const sidebar = document.createElement('div')
+  sidebar.className = 'sidebar'
+  sidebar.appendChild(renderSidebarSection('Global Settings', renderSettingsContent(), false))
+  sidebar.appendChild(renderSidebarSection('Games', renderGamesContent(), false))
+  sidebar.appendChild(renderSidebarSection('Environments', renderEnvsContent(), false))
+
+  const main = document.createElement('div')
+  main.className = 'main'
+
+  const entriesSection = document.createElement('div')
+  entriesSection.className = 'section'
+  const h2 = document.createElement('h2')
+  h2.textContent = 'Entries'
+  entriesSection.appendChild(h2)
+  entriesSection.appendChild(renderEntriesContent())
+  main.appendChild(entriesSection)
+
+  layout.append(sidebar, main)
+  app.appendChild(layout)
+  setInputTitles()
+  restoreCollapseState()
+}
+
+function setInputTitles() {
+  document.querySelectorAll('input').forEach(inp => {
+    if (inp.title) return
+    if (inp.placeholder) { inp.title = inp.placeholder; return }
+    const td = inp.closest('td')
+    if (td) {
+      const ths = td.closest('table')?.querySelectorAll('th')
+      if (ths) {
+        const idx = Array.from(td.parentElement.children).indexOf(td)
+        const th = ths[idx]
+        if (th) { inp.title = th.textContent.trim(); return }
+      }
+    }
+    const label = inp.closest('.field')?.querySelector('label')
+    if (label) { inp.title = label.textContent.trim(); return }
+  })
+}
+
+function renderBar() {
+  const bar = document.createElement('div')
+  bar.className = 'bar'
+
+  const expSet = document.createElement('button')
+  expSet.className = 'btn'
+  expSet.textContent = 'Export Settings'
+  expSet.onclick = exportSettings
+
+  const impSet = document.createElement('button')
+  impSet.className = 'btn'
+  impSet.textContent = 'Import Settings'
+  const impSetInput = document.createElement('input')
+  impSetInput.type = 'file'
+  impSetInput.accept = '.json'
+  impSetInput.style.display = 'none'
+  impSetInput.onchange = importSettings
+  impSet.onclick = () => impSetInput.click()
+
+  const expEnt = document.createElement('button')
+  expEnt.className = 'btn'
+  expEnt.textContent = 'Export Entries'
+  expEnt.onclick = exportEntries
+
+  const impEnt = document.createElement('button')
+  impEnt.className = 'btn'
+  impEnt.textContent = 'Import Entries'
+  const impEntInput = document.createElement('input')
+  impEntInput.type = 'file'
+  impEntInput.accept = '.json'
+  impEntInput.style.display = 'none'
+  impEntInput.onchange = importEntries
+  impEnt.onclick = () => impEntInput.click()
+
+  const resetBtn = document.createElement('button')
+  resetBtn.className = 'btn'
+  resetBtn.textContent = 'Reset Defaults'
+  resetBtn.onclick = () => {
+    if (!confirm('Reset settings (games, envs) to defaults? Entries will be kept.')) return
+    const def = JSON.parse(JSON.stringify(defaults))
+    setState(s => {
+      s.globalDomain = def.globalDomain
+      s.globalRedirectUrl = def.globalRedirectUrl
+      s.games = def.games
+      s.envs = def.envs
+    })
+  }
+
+  const clearBtn = document.createElement('button')
+  clearBtn.className = 'btn btn-danger'
+  clearBtn.textContent = 'Clear All Data'
+  clearBtn.onclick = () => {
+    if (!confirm('Delete all data from local storage and reload?')) return
+    localStorage.removeItem(STORAGE_KEY)
+    location.reload()
+  }
+
+  bar.append(expSet, impSet, impSetInput, expEnt, impEnt, impEntInput, resetBtn, clearBtn)
+  return bar
+}
+
+function renderSidebarSection(title, content, startCollapsed = true) {
+  const wrapper = document.createElement('div')
+  wrapper.className = 'sidebar-section'
+  wrapper.dataset.collapseId = 'sidebar-' + title
+
+  const header = document.createElement('div')
+  header.className = `collapsible-header${startCollapsed ? ' collapsed' : ''}`
+  header.innerHTML = `<span class="caret">▼</span> ${esc(title)}`
+
+  const body = document.createElement('div')
+  body.className = 'collapsible-body'
+  body.appendChild(content)
+
+  header.onclick = () => header.classList.toggle('collapsed')
+
+  wrapper.append(header, body)
+  return wrapper
+}
+
+// --- settings ---
+
+function renderSettingsContent() {
+  const container = document.createElement('div')
+
+  const fieldsDiv = document.createElement('div')
+  fieldsDiv.className = 'entry-fields'
+
+  const domField = document.createElement('div')
+  domField.className = 'field'
+  const domLabel = document.createElement('label')
+  domLabel.textContent = 'Default Domain'
+  const domInput = document.createElement('input')
+  domInput.type = 'text'
+  domInput.value = state.globalDomain
+  domInput.title = 'Default Domain'
+  domInput.oninput = () => {
+    state.globalDomain = domInput.value
+    saveState()
+    syncUrls()
+    syncPlaceholders()
+  }
+  domField.append(domLabel, domInput)
+
+  const redirField = document.createElement('div')
+  redirField.className = 'field'
+  const redirLabel = document.createElement('label')
+  redirLabel.textContent = 'Default Redirect URL'
+  const redirInput = document.createElement('input')
+  redirInput.type = 'text'
+  redirInput.value = state.globalRedirectUrl
+  redirInput.title = 'Default Redirect URL'
+  redirInput.oninput = () => {
+    state.globalRedirectUrl = redirInput.value
+    saveState()
+    syncUrls()
+    syncPlaceholders()
+  }
+  redirField.append(redirLabel, redirInput)
+
+  fieldsDiv.append(domField, redirField)
+  container.appendChild(fieldsDiv)
+
+  return container
+}
+
+// --- games ---
+
+function renderGamesContent() {
+  const container = document.createElement('div')
+
+  // Add form
+  const addForm = document.createElement('form')
+  addForm.style.display = 'flex'
+  addForm.style.gap = '8px'
+  addForm.style.marginBottom = '12px'
+
+  const nameInput = document.createElement('input')
+  nameInput.placeholder = 'Game Name'
+  nameInput.style.flex = '1'
+
+  const gidInput = document.createElement('input')
+  gidInput.placeholder = 'Game ID'
+  gidInput.style.flex = '1'
+
+  const addBtn = document.createElement('button')
+  addBtn.className = 'btn btn-primary'
+  addBtn.textContent = 'Add'
+  addForm.onsubmit = (e) => {
+    e.preventDefault()
+    const name = nameInput.value.trim()
+    const gameId = gidInput.value.trim()
+    if (!name && !gameId) return
+    setState(s => { s.games.push({ name, gameId }) })
+    nameInput.value = ''
+    gidInput.value = ''
+    nameInput.focus()
+  }
+
+  addForm.append(nameInput, gidInput, addBtn)
+  container.appendChild(addForm)
+
+  if (state.games.length === 0) {
+    container.appendChild(emptyMsg('No games configured.'))
+  } else {
+    const table = document.createElement('table')
+    table.innerHTML = '<thead><tr><th>Game Name</th><th>Game ID</th><th></th></tr></thead>'
+    const tbody = document.createElement('tbody')
+
+    state.games.forEach((game, i) => {
+      const tr = document.createElement('tr')
+      tr.innerHTML = `
+        <td><input type="text" value="${esc(game.name)}" data-idx="${i}" data-field="name" data-type="game"></td>
+        <td><input type="text" value="${esc(game.gameId)}" data-idx="${i}" data-field="gameId" data-type="game"></td>
+        <td><button class="btn-icon" title="Delete">✕</button></td>
+      `
+      tr.querySelectorAll('input').forEach(inp => {
+        inp.oninput = () => {
+          state.games[+inp.dataset.idx][inp.dataset.field] = inp.value
+          saveState()
+          syncUrls()
+        }
+      })
+      tr.querySelector('.btn-icon').onclick = () => {
+        setState(s => { s.games.splice(i, 1) })
+      }
+      tbody.appendChild(tr)
+    })
+    table.appendChild(tbody)
+    container.appendChild(table)
+  }
+
+  return container
+}
+
+// --- envs ---
+
+function renderEnvsContent() {
+  const container = document.createElement('div')
+
+  const addForm = document.createElement('form')
+  addForm.style.display = 'flex'
+  addForm.style.gap = '8px'
+  addForm.style.marginBottom = '12px'
+
+  const nameInput = document.createElement('input')
+  nameInput.placeholder = 'Name'
+  nameInput.style.flex = '1'
+
+  const prefixInput = document.createElement('input')
+  prefixInput.placeholder = 'Suffix'
+  prefixInput.style.flex = '1'
+
+  const domainInput = document.createElement('input')
+  domainInput.id = 'envDomainAdd'
+  domainInput.placeholder = state.globalDomain || 'domain'
+  domainInput.style.flex = '1'
+
+  const addBtn = document.createElement('button')
+  addBtn.className = 'btn btn-primary'
+  addBtn.textContent = 'Add'
+  addForm.onsubmit = (e) => {
+    e.preventDefault()
+    const name = nameInput.value.trim()
+    const prefix = prefixInput.value.trim()
+    const domain = domainInput.value.trim()
+    if (!name) return
+    setState(s => { s.envs.push({ name, suffix: prefix, domain }) })
+    nameInput.value = ''
+    prefixInput.value = ''
+    domainInput.value = ''
+    nameInput.focus()
+  }
+
+  addForm.append(nameInput, prefixInput, domainInput, addBtn)
+  container.appendChild(addForm)
+
+  const table = document.createElement('table')
+  table.innerHTML = '<thead><tr><th>Name</th><th>Suffix</th><th>Domain</th><th></th></tr></thead>'
+  const tbody = document.createElement('tbody')
+
+  state.envs.forEach((env, i) => {
+    const tr = document.createElement('tr')
+    tr.innerHTML = `
+      <td><input type="text" value="${esc(env.name)}" data-idx="${i}" data-field="name" data-type="env"></td>
+      <td><input type="text" value="${esc(env.suffix)}" data-idx="${i}" data-field="suffix" data-type="env"></td>
+      <td><input type="text" value="${esc(env.domain)}" placeholder="${esc(state.globalDomain)}" data-idx="${i}" data-field="domain" data-type="env"></td>
+      <td><button class="btn-icon" title="Delete">✕</button></td>
+    `
+    tr.querySelectorAll('input').forEach(inp => {
+      inp.oninput = () => {
+        state.envs[+inp.dataset.idx][inp.dataset.field] = inp.value
+        saveState()
+        syncUrls()
+      }
+    })
+    tr.querySelector('.btn-icon').onclick = () => {
+      setState(s => { s.envs.splice(i, 1) })
+    }
+    tbody.appendChild(tr)
+  })
+  table.appendChild(tbody)
+  container.appendChild(table)
+
+  return container
+}
+
+// --- entries ---
+
+function renderEntriesContent() {
+  const container = document.createElement('div')
+
+  const addForm = document.createElement('form')
+  addForm.style.display = 'flex'
+  addForm.style.gap = '8px'
+  addForm.style.marginBottom = '16px'
+  addForm.style.flexWrap = 'wrap'
+  addForm.style.alignItems = 'flex-end'
+
+  const clientGroup = document.createElement('div')
+  clientGroup.style.flex = '1'
+  clientGroup.style.minWidth = '140px'
+  const clientLabel = document.createElement('div')
+  clientLabel.style.fontSize = '.8rem'
+  clientLabel.style.fontWeight = '600'
+  clientLabel.style.color = '#555'
+  clientLabel.style.marginBottom = '3px'
+  clientLabel.innerHTML = 'Client ID <span class="info-tip">i<span class="info-tooltip">Paste a lobby URL here to auto-extract Client ID, Token, and Redirect URL</span></span>'
+
+  const newClientId = document.createElement('input')
+  newClientId.placeholder = 'Client ID'
+  newClientId.style.width = '100%'
+  newClientId.onpaste = (e) => {
+    const text = (e.clipboardData || window.clipboardData).getData('text')
+    if (!text) return
+    try {
+      new URL(text)
+      e.preventDefault()
+      const parsed = new URL(text)
+      const clientId = parsed.searchParams.get('clientId') || ''
+      const token = parsed.searchParams.get('token') || ''
+      const redirectUrl = parsed.searchParams.get('redirectUrl') || ''
+      newClientId.value = clientId
+      newToken.value = token
+      newRedirect.value = redirectUrl
+      showToast('Fields extracted from URL!')
+    } catch {
+      // not a URL, let it paste normally
+    }
+  }
+
+  clientGroup.append(clientLabel, newClientId)
+
+  const tokenGroup = document.createElement('div')
+  tokenGroup.style.flex = '1'
+  tokenGroup.style.minWidth = '140px'
+  const tokenLabel = document.createElement('div')
+  tokenLabel.style.fontSize = '.8rem'
+  tokenLabel.style.fontWeight = '600'
+  tokenLabel.style.color = '#555'
+  tokenLabel.style.marginBottom = '3px'
+  tokenLabel.textContent = 'Token'
+
+  const newToken = document.createElement('input')
+  newToken.placeholder = 'Token'
+  newToken.style.width = '100%'
+  tokenGroup.append(tokenLabel, newToken)
+
+  const redirectGroup = document.createElement('div')
+  redirectGroup.style.flex = '1'
+  redirectGroup.style.minWidth = '140px'
+  const redirectLabel = document.createElement('div')
+  redirectLabel.style.fontSize = '.8rem'
+  redirectLabel.style.fontWeight = '600'
+  redirectLabel.style.color = '#555'
+  redirectLabel.style.marginBottom = '3px'
+  redirectLabel.textContent = 'Redirect URL'
+
+  const newRedirect = document.createElement('input')
+  newRedirect.id = 'newRedirect'
+  newRedirect.placeholder = state.globalRedirectUrl || 'Redirect URL'
+  newRedirect.style.width = '100%'
+  redirectGroup.append(redirectLabel, newRedirect)
+
+  const addBtn = document.createElement('button')
+  addBtn.className = 'btn btn-primary'
+  addBtn.textContent = 'Add Entry'
+  addForm.onsubmit = (e) => {
+    e.preventDefault()
+    const clientId = newClientId.value.trim()
+    const token = newToken.value.trim()
+    const redirectUrl = newRedirect.value.trim()
+    if (!clientId && !token) return
+    setState(s => {
+      s.entries.push({ id: uid(), clientId, token, redirectUrl })
+    })
+    newClientId.value = ''
+    newToken.value = ''
+    newRedirect.value = ''
+    newClientId.focus()
+  }
+
+  addForm.append(clientGroup, tokenGroup, redirectGroup, addBtn)
+  container.appendChild(addForm)
+
+  if (state.entries.length === 0) {
+    container.appendChild(emptyMsg('No entries yet. Add one above.'))
+  } else {
+    state.entries.forEach(entry => {
+      container.appendChild(renderEntry(entry))
+    })
+  }
+
+  return container
+}
+
+function renderEntry(entry) {
+  const wrapper = document.createElement('div')
+  wrapper.className = 'collapsible'
+  wrapper.dataset.collapseId = entry.id
+
+  const header = document.createElement('div')
+  header.className = 'collapsible-header collapsed'
+  header.innerHTML = `<span class="caret">▼</span> ${esc(entry.clientId || '(no clientId)')}`
+  wrapper.appendChild(header)
+
+  const body = document.createElement('div')
+  body.className = 'collapsible-body'
+
+  // entry editable fields
+  const fieldsDiv = document.createElement('div')
+  fieldsDiv.className = 'entry-fields'
+
+  const fConfig = [
+    { label: 'Client ID', value: entry.clientId, field: 'clientId', id: entry.id },
+    { label: 'Token', value: entry.token, field: 'token', id: entry.id },
+    { label: 'Redirect URL', value: entry.redirectUrl, field: 'redirectUrl', id: entry.id },
+  ]
+
+  fConfig.forEach(f => {
+    const div = document.createElement('div')
+    div.className = 'field'
+    const label = document.createElement('label')
+    label.innerHTML = f.field === 'clientId'
+      ? 'Client ID <span class="info-tip">i<span class="info-tooltip">Paste a lobby URL here to auto-extract Client ID, Token, and Redirect URL</span></span>'
+      : esc(f.label)
+    const inp = document.createElement('input')
+    inp.type = 'text'
+    inp.value = f.value
+    inp.title = f.label
+    if (f.field === 'redirectUrl') {
+      inp.className = 'entry-redir-input'
+      inp.placeholder = state.globalRedirectUrl || 'Redirect URL'
+    }
+    inp.oninput = () => {
+      const e = state.entries.find(x => x.id === entry.id)
+      if (e) e[f.field] = inp.value
+      saveState()
+      syncUrls()
+    }
+    if (f.field === 'clientId') {
+      inp.onpaste = (e) => {
+        const text = (e.clipboardData || window.clipboardData).getData('text')
+        if (!text) return
+        try {
+          new URL(text)
+          e.preventDefault()
+          const parsed = new URL(text)
+          inp.value = parsed.searchParams.get('clientId') || ''
+          const inpToken = div.parentElement.querySelectorAll('.field input')[1]
+          const inpRedirect = div.parentElement.querySelectorAll('.field input')[2]
+          if (inpToken) inpToken.value = parsed.searchParams.get('token') || ''
+          if (inpRedirect) inpRedirect.value = parsed.searchParams.get('redirectUrl') || ''
+          const e2 = state.entries.find(x => x.id === entry.id)
+          if (e2) {
+            e2.clientId = inp.value
+            e2.token = inpToken ? inpToken.value : ''
+            e2.redirectUrl = inpRedirect ? inpRedirect.value : ''
+          }
+          saveState()
+          syncUrls()
+          showToast('Fields extracted from URL!')
+        } catch { /* not a url */ }
+      }
+    }
+    div.append(label, inp)
+    fieldsDiv.appendChild(div)
+  })
+
+  const delBtn = document.createElement('button')
+  delBtn.className = 'btn-icon'
+  delBtn.textContent = '✕'
+  delBtn.title = 'Delete Entry'
+  delBtn.style.alignSelf = 'flex-end'
+  delBtn.onclick = () => {
+    if (!confirm('Delete this entry?')) return
+    setState(s => { s.entries = s.entries.filter(e => e.id !== entry.id) })
+  }
+  fieldsDiv.appendChild(delBtn)
+  body.appendChild(fieldsDiv)
+
+  // env sub-groups
+  state.envs.forEach((env, envIdx) => {
+    body.appendChild(renderEnvGroup(entry, env, envIdx))
+  })
+
+  wrapper.appendChild(body)
+  header.onclick = () => { header.classList.toggle('collapsed') }
+  return wrapper
+}
+
+function renderEnvGroup(entry, env, envIdx) {
+  const wrapper = document.createElement('div')
+  wrapper.className = 'collapsible'
+  wrapper.dataset.collapseId = entry.id + '-env-' + envIdx
+
+  const header = document.createElement('div')
+  header.className = 'collapsible-header collapsed'
+  header.innerHTML = `<span class="caret">▼</span> ${esc(env.name)}`
+  wrapper.appendChild(header)
+
+  const body = document.createElement('div')
+  body.className = 'collapsible-body'
+
+  let hasUrls = false
+  state.games.forEach((game, gameIdx) => {
+    if (!game.name && !game.gameId) return
+    hasUrls = true
+    body.appendChild(renderUrlRow(game, gameIdx, entry, env, envIdx))
+  })
+
+  if (!hasUrls) {
+    body.appendChild(emptyMsg('No games configured.'))
+  }
+
+  wrapper.appendChild(body)
+  header.onclick = () => { header.classList.toggle('collapsed') }
+  return wrapper
+}
+
+function renderUrlRow(game, gameIdx, entry, env, envIdx) {
+  const row = document.createElement('div')
+  row.className = 'url-row'
+  row.dataset.gameIdx = gameIdx
+  row.dataset.envIdx = envIdx
+  row.dataset.entryId = entry.id
+
+  const url = buildUrl(game, env, entry)
+
+  const link = document.createElement('a')
+  link.href = url
+  link.target = '_blank'
+  link.textContent = url
+
+  const copyBtn = document.createElement('button')
+  copyBtn.className = 'btn btn-sm'
+  copyBtn.textContent = 'Copy'
+  copyBtn.onclick = (e) => { e.stopPropagation(); copyUrl(url) }
+
+  row.append(link, copyBtn)
+  return row
+}
+
+// --- sync urls (lightweight, no full re-render) ---
+
+function syncUrls() {
+  document.querySelectorAll('.url-row').forEach(row => {
+    const gameIdx = +row.dataset.gameIdx
+    const envIdx = +row.dataset.envIdx
+    const entryId = row.dataset.entryId
+    const game = state.games[gameIdx]
+    const env = state.envs[envIdx]
+    const entry = state.entries.find(e => e.id === entryId)
+    if (!game || !env || !entry) return
+
+    const url = buildUrl(game, env, entry)
+    const link = row.querySelector('a')
+    if (link) {
+      link.href = url
+      link.textContent = url
+    }
+  })
+}
+
+function syncPlaceholders() {
+  document.querySelectorAll('input[data-type="env"][data-field="domain"]').forEach(inp => {
+    inp.placeholder = state.globalDomain
+  })
+  document.querySelectorAll('.entry-redir-input').forEach(inp => {
+    inp.placeholder = state.globalRedirectUrl || 'Redirect URL'
+  })
+  const addRedir = document.getElementById('newRedirect')
+  if (addRedir) addRedir.placeholder = state.globalRedirectUrl || 'Redirect URL'
+  const envAdd = document.getElementById('envDomainAdd')
+  if (envAdd) envAdd.placeholder = state.globalDomain || 'domain'
+}
+
+// --- helpers ---
+
+function emptyMsg(text) {
+  const div = document.createElement('div')
+  div.className = 'empty-msg'
+  div.textContent = text
+  return div
+}
+
+// --- bootstrap ---
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadState()
+  render()
+})
