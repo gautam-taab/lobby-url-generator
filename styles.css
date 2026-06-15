@@ -357,6 +357,18 @@ td .btn-sm {
   display: block;
 }
 
+.client-id-code {
+  font-family: "SF Mono", "Fira Code", "Fira Mono", "Consolas", monospace;
+  background: #f0f0f0;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: .85rem;
+}
+
+input.client-id-code {
+  font-size: .9rem;
+}
+
 @media (max-width: 768px) {
   .layout { flex-direction: column; }
   .sidebar { width: 100%; position: static; }
