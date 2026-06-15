@@ -60,6 +60,61 @@ function uid() {
   return crypto.randomUUID()
 }
 
+function nextClientName() {
+  let max = 0
+  state.entries.forEach(e => {
+    const m = e.clientName?.match(/^client(\d+)$/)
+    if (m) max = Math.max(max, +m[1])
+  })
+  return 'client' + (max + 1)
+}
+
+function nextPlayerName(entryId) {
+  const entry = state.entries.find(e => e.id === entryId)
+  if (!entry) return 'player1'
+  let max = 0
+  entry.tokens.forEach(t => {
+    const m = t.playerName?.match(/^player(\d+)$/)
+    if (m) max = Math.max(max, +m[1])
+  })
+  return 'player' + (max + 1)
+}
+
+function initEditable(span, initialValue, saveFn) {
+  span.title = 'Double-click to edit'
+  span.style.cursor = 'text'
+  span.onclick = (e) => e.stopPropagation()
+  span.ondblclick = (e) => {
+    e.stopPropagation()
+    const v = initialValue
+    const input = document.createElement('input')
+    input.type = 'text'
+    input.value = v
+    input.style.width = Math.max(v.length * 0.7 * 8, 60) + 'px'
+    input.style.padding = '2px 6px'
+    input.style.fontSize = 'inherit'
+    input.style.fontFamily = 'inherit'
+    const done = () => {
+      const val = input.value.trim()
+      if (val && val !== v) {
+        saveFn(val)
+        span.textContent = val
+      } else {
+        span.textContent = v
+      }
+    }
+    input.onblur = done
+    input.onkeydown = (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); input.blur() }
+      if (ev.key === 'Escape') { ev.preventDefault(); span.textContent = v }
+    }
+    span.textContent = ''
+    span.appendChild(input)
+    input.focus()
+    input.select()
+  }
+}
+
 function truncateToken(t) {
   if (!t || t.length <= 15) return esc(t)
   const first = t.slice(0, 5)
@@ -691,20 +746,27 @@ function renderEntriesContent() {
   addBtn.textContent = 'Add Entry'
   addForm.onsubmit = (e) => {
     e.preventDefault()
-    const clientName = newClientName.value.trim()
+    const clientName = newClientName.value.trim() || nextClientName()
     const clientId = newClientId.value.trim()
     const playerName = newPlayerName.value.trim()
     const token = newToken.value.trim()
     const redirectUrl = newRedirect.value.trim()
     if (!clientId && !token) return
     setState(s => {
-      s.entries.push({
-        id: uid(),
-        clientName,
-        clientId,
-        tokens: [{ playerName, token }],
-        redirectUrl,
-      })
+      const existing = s.entries.find(e => e.clientId === clientId)
+      if (existing) {
+        if (!existing.tokens.some(t => t.token === token)) {
+          existing.tokens.push({ playerName, token })
+        }
+      } else {
+        s.entries.push({
+          id: uid(),
+          clientName,
+          clientId,
+          tokens: [{ playerName, token }],
+          redirectUrl,
+        })
+      }
     })
     newClientName.value = ''
     newClientId.value = ''
@@ -735,88 +797,41 @@ function renderEntry(entry) {
 
   const header = document.createElement('div')
   header.className = 'collapsible-header collapsed'
-  const displayName = entry.clientName ? esc(entry.clientName) + ' ' : ''
-  const displayId = entry.clientId
-    ? `<span class="client-id-code">${esc(entry.clientId)}</span>`
-    : '<span class="client-id-code">(no clientId)</span>'
-  header.innerHTML = `<span class="caret">▼</span> ${displayName}${displayId}`
-  wrapper.appendChild(header)
 
-  const body = document.createElement('div')
-  body.className = 'collapsible-body'
+  const caret = document.createElement('span')
+  caret.className = 'caret'
+  caret.textContent = '▼'
+  header.appendChild(caret)
 
-  // entry-level editable fields
-  const fieldsDiv = document.createElement('div')
-  fieldsDiv.className = 'entry-fields'
-
-  const fConfig = [
-    { label: 'Client Name', value: entry.clientName || '', field: 'clientName', id: entry.id },
-    { label: 'Client ID', value: entry.clientId, field: 'clientId', id: entry.id },
-    { label: 'Redirect URL', value: entry.redirectUrl, field: 'redirectUrl', id: entry.id },
-  ]
-
-  fConfig.forEach(f => {
-    const div = document.createElement('div')
-    div.className = 'field'
-    const label = document.createElement('label')
-    label.innerHTML = f.field === 'clientId'
-      ? 'Client ID <span class="info-tip">i<span class="info-tooltip">Paste a lobby URL here to auto-extract Client ID, Token, and Redirect URL</span></span>'
-      : esc(f.label)
-    const inp = document.createElement('input')
-    inp.type = 'text'
-    inp.value = f.value
-    inp.title = f.label
-    if (f.field === 'redirectUrl') {
-      inp.className = 'entry-redir-input'
-      inp.placeholder = state.globalRedirectUrl || 'Redirect URL'
-    }
-    inp.oninput = () => {
-      const e = state.entries.find(x => x.id === entry.id)
-      if (e) e[f.field] = inp.value
-      saveState()
-      syncUrls()
-    }
-    if (f.field === 'clientId') {
-      inp.onpaste = (e) => {
-        const text = (e.clipboardData || window.clipboardData).getData('text')
-        if (!text) return
-        try {
-          new URL(text)
-          e.preventDefault()
-          const parsed = new URL(text)
-          inp.value = parsed.searchParams.get('clientId') || ''
-          const e2 = state.entries.find(x => x.id === entry.id)
-          if (e2) {
-            e2.clientId = inp.value
-            const extToken = parsed.searchParams.get('token') || ''
-            const extRedirect = parsed.searchParams.get('redirectUrl') || ''
-            e2.redirectUrl = extRedirect
-            if (e2.tokens.length > 0) {
-              e2.tokens[0].token = extToken
-            } else {
-              e2.tokens.push({ playerName: '', token: extToken })
-            }
-          }
-          setState(() => {})
-          showToast('Fields extracted from URL!')
-        } catch { /* not a url */ }
-      }
-    }
-    div.append(label, inp)
-    fieldsDiv.appendChild(div)
+  const nameSpan = document.createElement('span')
+  nameSpan.textContent = entry.clientName || '(no name)'
+  initEditable(nameSpan, entry.clientName || '', (val) => {
+    const e = state.entries.find(x => x.id === entry.id)
+    if (e) { e.clientName = val; saveState() }
   })
+  header.appendChild(nameSpan)
 
+  header.appendChild(document.createTextNode(' '))
+
+  const idSpan = document.createElement('span')
+  idSpan.className = 'client-id-code'
+  idSpan.textContent = entry.clientId || '(no clientId)'
+  header.appendChild(idSpan)
   const delBtn = document.createElement('button')
   delBtn.className = 'btn-icon'
   delBtn.textContent = '✕'
   delBtn.title = 'Delete Entry'
-  delBtn.style.alignSelf = 'flex-end'
-  delBtn.onclick = () => {
+  delBtn.style.marginLeft = 'auto'
+  delBtn.onclick = (e) => {
+    e.stopPropagation()
     if (!confirm('Delete this entry?')) return
     setState(s => { s.entries = s.entries.filter(e => e.id !== entry.id) })
   }
-  fieldsDiv.appendChild(delBtn)
-  body.appendChild(fieldsDiv)
+  header.appendChild(delBtn)
+  wrapper.appendChild(header)
+
+  const body = document.createElement('div')
+  body.className = 'collapsible-body'
 
   // --- token add form ---
   const tokenAddForm = document.createElement('form')
@@ -848,12 +863,14 @@ function renderEntry(entry) {
   tokenAddBtn.textContent = 'Add Token'
   tokenAddForm.onsubmit = (e) => {
     e.preventDefault()
-    const playerName = tokenPlayerInp.value.trim()
+    const playerName = tokenPlayerInp.value.trim() || nextPlayerName(entry.id)
     const token = tokenTokenInp.value.trim()
     if (!token) return
     setState(s => {
       const e2 = s.entries.find(x => x.id === entry.id)
-      if (e2) e2.tokens.push({ playerName, token })
+      if (e2 && !e2.tokens.some(t => t.token === token)) {
+        e2.tokens.push({ playerName, token })
+      }
     })
   }
 
@@ -877,60 +894,45 @@ function renderTokenGroup(entry, token, tokenIdx) {
 
   const header = document.createElement('div')
   header.className = 'collapsible-header collapsed'
-  const playerPart = token.playerName ? esc(token.playerName) + ' ' : ''
-  const tokenDisplay = token.token
-    ? `<span class="client-id-code" title="${esc(token.token)}">${truncateToken(token.token)}</span>`
-    : '<span class="client-id-code">(no token)</span>'
-  header.innerHTML = `<span class="caret">▼</span> ${playerPart}${tokenDisplay}`
-  wrapper.appendChild(header)
 
-  const body = document.createElement('div')
-  body.className = 'collapsible-body'
+  const caret = document.createElement('span')
+  caret.className = 'caret'
+  caret.textContent = '▼'
+  header.appendChild(caret)
 
-  // token inline fields
-  const fieldsDiv = document.createElement('div')
-  fieldsDiv.className = 'entry-fields'
-
-  const fConfig = [
-    { label: 'Player Name', value: token.playerName || '', field: 'playerName' },
-    { label: 'Token', value: token.token, field: 'token' },
-  ]
-
-  fConfig.forEach(f => {
-    const div = document.createElement('div')
-    div.className = 'field'
-    const label = document.createElement('label')
-    label.textContent = f.label
-    const inp = document.createElement('input')
-    inp.type = 'text'
-    inp.value = f.value
-    inp.title = f.label
-    inp.oninput = () => {
-      const e = state.entries.find(x => x.id === entry.id)
-      if (e && e.tokens[tokenIdx]) {
-        e.tokens[tokenIdx][f.field] = inp.value
-        saveState()
-        syncUrls()
-      }
-    }
-    div.append(label, inp)
-    fieldsDiv.appendChild(div)
+  const nameSpan = document.createElement('span')
+  nameSpan.textContent = token.playerName || '(no name)'
+  initEditable(nameSpan, token.playerName || '', (val) => {
+    const e = state.entries.find(x => x.id === entry.id)
+    if (e && e.tokens[tokenIdx]) { e.tokens[tokenIdx].playerName = val; saveState() }
   })
+  header.appendChild(nameSpan)
 
+  header.appendChild(document.createTextNode(' '))
+
+  const tokenSpan = document.createElement('span')
+  tokenSpan.className = 'client-id-code'
+  tokenSpan.textContent = token.token ? truncateToken(token.token) : '(no token)'
+  tokenSpan.title = token.token || ''
+  header.appendChild(tokenSpan)
   const delBtn = document.createElement('button')
   delBtn.className = 'btn-icon'
   delBtn.textContent = '✕'
   delBtn.title = 'Delete Token'
-  delBtn.style.alignSelf = 'flex-end'
-  delBtn.onclick = () => {
+  delBtn.style.marginLeft = 'auto'
+  delBtn.onclick = (e) => {
+    e.stopPropagation()
     if (!confirm('Delete this token?')) return
     setState(s => {
       const e2 = s.entries.find(x => x.id === entry.id)
       if (e2) e2.tokens.splice(tokenIdx, 1)
     })
   }
-  fieldsDiv.appendChild(delBtn)
-  body.appendChild(fieldsDiv)
+  header.appendChild(delBtn)
+  wrapper.appendChild(header)
+
+  const body = document.createElement('div')
+  body.className = 'collapsible-body'
 
   // local url group (first, if configured)
   if (state.localUrl) {
@@ -1104,52 +1106,11 @@ function syncUrls() {
       link.textContent = url
     }
   })
-
-  // update entry headers (clientName / clientId may have changed)
-  document.querySelectorAll('.collapsible[data-collapse-id]').forEach(el => {
-    const entry = state.entries.find(e => e.id === el.dataset.collapseId)
-    if (!entry) {
-      // maybe a token header
-      const m = el.dataset.collapseId.match(/^(.+)-t-(\d+)$/)
-      if (!m) return
-      const tokenEntry = state.entries.find(e => e.id === m[1])
-      if (!tokenEntry) return
-      const tokenIdx = +m[2]
-      const token = tokenEntry.tokens?.[tokenIdx]
-      if (!token) return
-      const header = el.querySelector('.collapsible-header')
-      if (!header) return
-      const caret = header.querySelector('.caret')
-      if (!caret) return
-      const playerPart = token.playerName ? esc(token.playerName) + ' ' : ''
-      const tokenDisplay = token.token
-        ? `<span class="client-id-code" title="${esc(token.token)}">${truncateToken(token.token)}</span>`
-        : '<span class="client-id-code">(no token)</span>'
-      header.innerHTML = ''
-      header.appendChild(caret)
-      header.insertAdjacentHTML('beforeend', ' ' + playerPart + tokenDisplay)
-      return
-    }
-    const header = el.querySelector('.collapsible-header')
-    if (!header) return
-    const caret = header.querySelector('.caret')
-    if (!caret) return
-    const displayName = entry.clientName ? esc(entry.clientName) + ' ' : ''
-    const displayId = entry.clientId
-      ? `<span class="client-id-code">${esc(entry.clientId)}</span>`
-      : '<span class="client-id-code">(no clientId)</span>'
-    header.innerHTML = ''
-    header.appendChild(caret)
-    header.insertAdjacentHTML('beforeend', ' ' + displayName + displayId)
-  })
 }
 
 function syncPlaceholders() {
   document.querySelectorAll('input[data-type="env"][data-field="domain"]').forEach(inp => {
     inp.placeholder = state.globalDomain
-  })
-  document.querySelectorAll('.entry-redir-input').forEach(inp => {
-    inp.placeholder = state.globalRedirectUrl || 'Redirect URL'
   })
   const addRedir = document.getElementById('newRedirect')
   if (addRedir) addRedir.placeholder = state.globalRedirectUrl || 'Redirect URL'
