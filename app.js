@@ -393,6 +393,7 @@ function renderBar() {
     setState(s => {
       s.globalDomain = def.globalDomain
       s.globalRedirectUrl = def.globalRedirectUrl
+      s.localUrl = def.localUrl
       s.games = def.games
       s.envs = def.envs
     })
