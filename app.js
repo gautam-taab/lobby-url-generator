@@ -28,7 +28,31 @@ function migrateEntry(e) {
     e.tokens = [{ playerName: '', token: e.token }]
     delete e.token
   }
-  if (!e.tokens) e.tokens = []
+  if (Array.isArray(e.tokens)) {
+    const oldTokens = e.tokens
+    e.tokens = {}
+    state.envs.forEach(env => {
+      e.tokens[env.name] = oldTokens.map(t => ({ ...t }))
+    })
+  }
+  if (!e.tokens || typeof e.tokens !== 'object' || Array.isArray(e.tokens)) {
+    e.tokens = {}
+    state.envs.forEach(env => {
+      e.tokens[env.name] = []
+    })
+  }
+  state.envs.forEach(env => {
+    if (!e.tokens[env.name]) e.tokens[env.name] = []
+  })
+  if (!e.createdAt) e.createdAt = Date.now()
+  state.envs.forEach(env => {
+    const arr = e.tokens[env.name]
+    if (arr) {
+      arr.forEach((t, i) => {
+        if (!t.createdAt) t.createdAt = e.createdAt + i
+      })
+    }
+  })
 }
 
 function loadState() {
@@ -69,50 +93,70 @@ function nextClientName() {
   return 'client' + (max + 1)
 }
 
-function nextPlayerName(entryId) {
+function nextPlayerName(entryId, envName) {
   const entry = state.entries.find(e => e.id === entryId)
   if (!entry) return 'player1'
+  const tokens = entry.tokens[envName] || []
   let max = 0
-  entry.tokens.forEach(t => {
+  tokens.forEach(t => {
     const m = t.playerName?.match(/^player(\d+)$/)
     if (m) max = Math.max(max, +m[1])
   })
   return 'player' + (max + 1)
 }
 
-function initEditable(span, initialValue, saveFn) {
-  span.title = 'Double-click to edit'
-  span.style.cursor = 'text'
-  span.onclick = (e) => e.stopPropagation()
-  span.ondblclick = (e) => {
-    e.stopPropagation()
-    const v = initialValue
+function makeEditable(container, initialValue, saveFn) {
+  let value = initialValue
+
+  function showDisplay() {
+    container.style.display = 'inline-flex'
+    container.style.alignItems = 'center'
+    container.style.gap = '3px'
+    const display = document.createElement('span')
+    display.textContent = value
+    const editBtn = document.createElement('button')
+    editBtn.className = 'btn-icon btn-edit'
+    editBtn.title = 'Edit'
+    editBtn.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>'
+    editBtn.onclick = (e) => {
+      e.stopPropagation()
+      enterEdit()
+    }
+    container.textContent = ''
+    container.append(display, editBtn)
+  }
+
+  function enterEdit() {
     const input = document.createElement('input')
     input.type = 'text'
-    input.value = v
-    input.style.width = Math.max(v.length * 9 + 20, 100) + 'px'
+    input.value = value
+    input.style.width = Math.max(value.length * 9 + 20, 100) + 'px'
     input.style.padding = '2px 6px'
     input.style.fontSize = 'inherit'
     input.style.fontFamily = 'inherit'
+
     const done = () => {
       const val = input.value.trim()
-      if (val && val !== v) {
+      if (val && val !== value) {
         saveFn(val)
-        span.textContent = val
-      } else {
-        span.textContent = v
+        value = val
       }
+      showDisplay()
     }
+
     input.onblur = done
     input.onkeydown = (ev) => {
       if (ev.key === 'Enter') { ev.preventDefault(); input.blur() }
-      if (ev.key === 'Escape') { ev.preventDefault(); span.textContent = v }
+      if (ev.key === 'Escape') { ev.preventDefault(); showDisplay() }
     }
-    span.textContent = ''
-    span.appendChild(input)
+
+    container.textContent = ''
+    container.appendChild(input)
     input.focus()
     input.select()
   }
+
+  showDisplay()
 }
 
 function truncateToken(t) {
@@ -153,6 +197,26 @@ function esc(s) {
   const div = document.createElement('div')
   div.textContent = s
   return div.innerHTML
+}
+
+function detectEnv(urlStr) {
+  try {
+    const url = new URL(urlStr)
+    const host = url.hostname
+    if (host === 'localhost' || host === '127.0.0.1') return null
+    let matched = null
+    state.envs.forEach(env => {
+      if (env.suffix && host.includes(env.suffix + '.')) matched = env.name
+    })
+    if (!matched) {
+      state.envs.forEach(env => {
+        if (!env.suffix) matched = env.name
+      })
+    }
+    return matched
+  } catch {
+    return null
+  }
 }
 
 // --- copy toast ---
@@ -266,7 +330,6 @@ function toggleCollapsed(header) {
 }
 
 function saveCollapseState() {
-  collapseState = {}
   document.querySelectorAll('[data-collapse-id]').forEach(el => {
     const header = el.querySelector('.collapsible-header')
     if (header) collapseState[el.dataset.collapseId] = header.classList.contains('collapsed')
@@ -275,6 +338,7 @@ function saveCollapseState() {
 
 function persistCollapseState() {
   const s = {}
+  for (const k in collapseState) s[k] = collapseState[k]
   document.querySelectorAll('[data-collapse-id]').forEach(el => {
     const header = el.querySelector('.collapsible-header')
     if (header) s[el.dataset.collapseId] = header.classList.contains('collapsed')
@@ -299,7 +363,23 @@ function restoreCollapseState() {
   persistCollapseState()
 }
 
+function getLayoutMode(entryId) {
+  return collapseState[entryId + '-layout'] || 'env'
+}
+
+function setLayoutMode(entryId, mode) {
+  collapseState[entryId + '-layout'] = mode
+  persistCollapseState()
+  render()
+}
+
 function render() {
+  if (Object.keys(collapseState).length === 0) {
+    try {
+      const saved = localStorage.getItem('lobbyUrlCollapse')
+      if (saved) collapseState = JSON.parse(saved)
+    } catch {}
+  }
   saveCollapseState()
   const app = document.getElementById('app')
   app.innerHTML = ''
@@ -625,6 +705,7 @@ function renderEnvsContent() {
         state.envs[+inp.dataset.idx][inp.dataset.field] = inp.value
         saveState()
         syncUrls()
+        syncEnvSelects()
       }
     })
     tr.querySelector('.btn-icon').onclick = () => {
@@ -692,6 +773,10 @@ function renderEntriesContent() {
       newClientId.value = clientId
       newToken.value = token
       newRedirect.value = redirectUrl
+      const envName = detectEnv(text)
+      if (envName && [...newEnvSelect.options].some(o => o.value === envName)) {
+        newEnvSelect.value = envName
+      }
       showToast('Fields extracted from URL!')
     } catch {
       // not a URL, let it paste normally
@@ -699,6 +784,32 @@ function renderEntriesContent() {
   }
 
   clientGroup.append(clientLabel, newClientId)
+
+  const envGroup = document.createElement('div')
+  envGroup.style.flex = '1'
+  envGroup.style.minWidth = '100px'
+  const envLabel = document.createElement('div')
+  envLabel.style.fontSize = '.8rem'
+  envLabel.style.fontWeight = '600'
+  envLabel.style.color = '#555'
+  envLabel.style.marginBottom = '3px'
+  envLabel.textContent = 'Environment'
+
+  const newEnvSelect = document.createElement('select')
+  newEnvSelect.className = 'env-select'
+  newEnvSelect.style.width = '100%'
+  newEnvSelect.style.padding = '6px 8px'
+  newEnvSelect.style.border = '1px solid #ccc'
+  newEnvSelect.style.borderRadius = '4px'
+  newEnvSelect.style.fontSize = '.9rem'
+  newEnvSelect.style.background = '#fff'
+  state.envs.forEach(env => {
+    const opt = document.createElement('option')
+    opt.value = env.name
+    opt.textContent = env.name
+    newEnvSelect.appendChild(opt)
+  })
+  envGroup.append(envLabel, newEnvSelect)
 
   const playerGroup = document.createElement('div')
   playerGroup.style.flex = '1'
@@ -753,6 +864,7 @@ function renderEntriesContent() {
     e.preventDefault()
     const clientName = newClientName.value.trim() || nextClientName()
     const clientId = newClientId.value.trim()
+    const envName = newEnvSelect.value
     const playerName = newPlayerName.value.trim()
     const token = newToken.value.trim()
     const redirectUrl = newRedirect.value.trim()
@@ -760,16 +872,20 @@ function renderEntriesContent() {
     setState(s => {
       const existing = s.entries.find(e => e.clientId === clientId)
       if (existing) {
-        if (!existing.tokens.some(t => t.token === token)) {
-          existing.tokens.push({ playerName: playerName || nextPlayerName(existing.id), token })
+        const tokens = existing.tokens[envName] = existing.tokens[envName] || []
+        if (!tokens.some(t => t.token === token)) {
+          tokens.push({ playerName: playerName || nextPlayerName(existing.id, envName), token, createdAt: Date.now() })
         }
       } else {
+        const tokens = {}
+        tokens[envName] = [{ playerName: playerName || 'player1', token, createdAt: Date.now() }]
         s.entries.push({
           id: uid(),
           clientName,
           clientId,
-          tokens: [{ playerName: playerName || 'player1', token }],
+          tokens,
           redirectUrl,
+          createdAt: Date.now(),
         })
       }
     })
@@ -781,13 +897,14 @@ function renderEntriesContent() {
     newClientName.focus()
   }
 
-  addForm.append(nameGroup, clientGroup, playerGroup, tokenGroup, redirectGroup, addBtn)
+  addForm.append(clientGroup, tokenGroup, envGroup, nameGroup, playerGroup, redirectGroup, addBtn)
   container.appendChild(addForm)
 
   if (state.entries.length === 0) {
     container.appendChild(emptyMsg('No entries yet. Add one above.'))
   } else {
-    state.entries.forEach(entry => {
+    const sorted = [...state.entries].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    sorted.forEach(entry => {
       container.appendChild(renderEntry(entry))
     })
   }
@@ -808,13 +925,12 @@ function renderEntry(entry) {
   caret.textContent = '▼'
   header.appendChild(caret)
 
-  const nameSpan = document.createElement('span')
-  nameSpan.textContent = entry.clientName
-  initEditable(nameSpan, entry.clientName, (val) => {
+  const nameContainer = document.createElement('span')
+  makeEditable(nameContainer, entry.clientName, (val) => {
     const e = state.entries.find(x => x.id === entry.id)
     if (e) { e.clientName = val; saveState() }
   })
-  header.appendChild(nameSpan)
+  header.appendChild(nameContainer)
 
   header.appendChild(document.createTextNode(' '))
 
@@ -843,6 +959,23 @@ function renderEntry(entry) {
   tokenAddForm.className = 'token-add-form'
   tokenAddForm.style.cssText = 'display:flex;gap:8px;margin-bottom:12px;align-items:flex-end'
 
+  const tokenEnvSelect = document.createElement('select')
+  tokenEnvSelect.className = 'env-select'
+  tokenEnvSelect.title = 'Environment'
+  tokenEnvSelect.style.padding = '6px 8px'
+  tokenEnvSelect.style.border = '1px solid #ccc'
+  tokenEnvSelect.style.borderRadius = '4px'
+  tokenEnvSelect.style.fontSize = '.9rem'
+  tokenEnvSelect.style.background = '#fff'
+  tokenEnvSelect.style.width = '110px'
+  tokenEnvSelect.style.flexShrink = '0'
+  state.envs.forEach(env => {
+    const opt = document.createElement('option')
+    opt.value = env.name
+    opt.textContent = env.name
+    tokenEnvSelect.appendChild(opt)
+  })
+
   const tokenPlayerInp = document.createElement('input')
   tokenPlayerInp.placeholder = 'Player Name (optional)'
   tokenPlayerInp.style.flex = '1'
@@ -859,6 +992,10 @@ function renderEntry(entry) {
       const parsed = new URL(text)
       const token = parsed.searchParams.get('token') || ''
       tokenTokenInp.value = token
+      const envName = detectEnv(text)
+      if (envName && [...tokenEnvSelect.options].some(o => o.value === envName)) {
+        tokenEnvSelect.value = envName
+      }
       showToast('Token extracted from URL!')
     } catch { /* not a URL */ }
   }
@@ -868,34 +1005,65 @@ function renderEntry(entry) {
   tokenAddBtn.textContent = 'Add Token'
   tokenAddForm.onsubmit = (e) => {
     e.preventDefault()
-    const playerName = tokenPlayerInp.value.trim() || nextPlayerName(entry.id)
+    const envName = tokenEnvSelect.value
+    const playerName = tokenPlayerInp.value.trim() || nextPlayerName(entry.id, envName)
     const token = tokenTokenInp.value.trim()
     if (!token) return
     setState(s => {
       const e2 = s.entries.find(x => x.id === entry.id)
-      if (e2 && !e2.tokens.some(t => t.token === token)) {
-        e2.tokens.push({ playerName, token })
+      if (e2) {
+        const tokens = e2.tokens[envName] = e2.tokens[envName] || []
+        if (!tokens.some(t => t.token === token)) {
+          tokens.push({ playerName, token, createdAt: Date.now() })
+        }
       }
     })
   }
 
-  tokenAddForm.append(tokenPlayerInp, tokenTokenInp, tokenAddBtn)
+  tokenAddForm.append(tokenPlayerInp, tokenTokenInp, tokenEnvSelect, tokenAddBtn)
   body.appendChild(tokenAddForm)
 
-  // --- token collapsibles ---
-  entry.tokens.forEach((token, tokenIdx) => {
-    body.appendChild(renderTokenGroup(entry, token, tokenIdx))
-  })
+  // --- layout switcher ---
+  const layoutMode = getLayoutMode(entry.id)
+
+  const layoutBar = document.createElement('div')
+  layoutBar.className = 'layout-switcher'
+
+  const groupLabel = document.createElement('span')
+  groupLabel.className = 'layout-switcher-label'
+  groupLabel.textContent = 'Group By:'
+  layoutBar.appendChild(groupLabel)
+
+  const envLayoutBtn = document.createElement('button')
+  envLayoutBtn.className = 'btn btn-sm' + (layoutMode === 'env' ? ' btn-primary' : '')
+  envLayoutBtn.textContent = 'Env'
+  envLayoutBtn.onclick = () => setLayoutMode(entry.id, 'env')
+
+  const playerLayoutBtn = document.createElement('button')
+  playerLayoutBtn.className = 'btn btn-sm' + (layoutMode === 'player' ? ' btn-primary' : '')
+  playerLayoutBtn.textContent = 'Player'
+  playerLayoutBtn.onclick = () => setLayoutMode(entry.id, 'player')
+
+  layoutBar.append(envLayoutBtn, playerLayoutBtn)
+  body.appendChild(layoutBar)
+
+  // --- token sections ---
+  if (layoutMode === 'player') {
+    renderTokensByPlayer(entry, body)
+  } else {
+    renderTokensByEnv(entry, body)
+  }
 
   wrapper.appendChild(body)
   header.onclick = () => toggleCollapsed(header)
   return wrapper
 }
 
-function renderTokenGroup(entry, token, tokenIdx) {
+function renderTokenGroup(entry, token, tokenIdx, envName, opts = {}) {
+  const env = state.envs.find(e => e.name === envName)
   const wrapper = document.createElement('div')
   wrapper.className = 'collapsible token-group'
-  wrapper.dataset.collapseId = entry.id + '-t-' + tokenIdx
+  wrapper.dataset.collapseId = entry.id + '-t-' + envName + '-' + tokenIdx
 
   const header = document.createElement('div')
   header.className = 'collapsible-header collapsed'
@@ -905,13 +1073,19 @@ function renderTokenGroup(entry, token, tokenIdx) {
   caret.textContent = '▼'
   header.appendChild(caret)
 
-  const nameSpan = document.createElement('span')
-  nameSpan.textContent = token.playerName
-  initEditable(nameSpan, token.playerName, (val) => {
-    const e = state.entries.find(x => x.id === entry.id)
-    if (e && e.tokens[tokenIdx]) { e.tokens[tokenIdx].playerName = val; saveState() }
-  })
-  header.appendChild(nameSpan)
+  const nameContainer = document.createElement('span')
+  nameContainer.style.display = 'inline-flex'
+  nameContainer.style.alignItems = 'center'
+  nameContainer.style.gap = '3px'
+  if (opts.headerLabel) {
+    nameContainer.textContent = opts.headerLabel
+  } else {
+    makeEditable(nameContainer, token.playerName, (val) => {
+      const e = state.entries.find(x => x.id === entry.id)
+      if (e && e.tokens[envName]?.[tokenIdx]) { e.tokens[envName][tokenIdx].playerName = val; saveState() }
+    })
+  }
+  header.appendChild(nameContainer)
 
   header.appendChild(document.createTextNode(' '))
 
@@ -930,7 +1104,7 @@ function renderTokenGroup(entry, token, tokenIdx) {
     if (!confirm('Delete this token?')) return
     setState(s => {
       const e2 = s.entries.find(x => x.id === entry.id)
-      if (e2) e2.tokens.splice(tokenIdx, 1)
+      if (e2 && e2.tokens[envName]) e2.tokens[envName].splice(tokenIdx, 1)
     })
   }
   header.appendChild(delBtn)
@@ -939,13 +1113,8 @@ function renderTokenGroup(entry, token, tokenIdx) {
   const body = document.createElement('div')
   body.className = 'collapsible-body'
 
-  // game columns: env list below each game name
-  const envList = state.localUrl
-    ? [...state.envs, { name: 'Local', suffix: '', domain: '', _local: true }]
-    : state.envs
-
-  if (state.games.length === 0 || envList.length === 0) {
-    body.appendChild(emptyMsg('No games or environments configured.'))
+  if (state.games.length === 0) {
+    body.appendChild(emptyMsg('No games configured.'))
   } else {
     const bar = document.createElement('div')
     bar.className = 'game-bar'
@@ -956,46 +1125,48 @@ function renderTokenGroup(entry, token, tokenIdx) {
       const col = document.createElement('div')
       col.className = 'game-col'
 
-      const header = document.createElement('div')
-      header.className = 'game-col-header'
-      header.textContent = game.name || '?'
-      col.appendChild(header)
+      const envUrl = env ? buildUrl(game, env, entry, token) : ''
+      const localUrl = state.localUrl ? buildLocalUrl(game, entry, token) : ''
 
-      envList.forEach((env, colIdx) => {
-        const isLocal = env._local
-        const envIdx = isLocal ? -2 : colIdx
-        const url = isLocal
-          ? buildLocalUrl(game, entry, token)
-          : buildUrl(game, state.envs[colIdx], entry, token)
+      const row = document.createElement('div')
+      row.className = 'game-token-row'
+      row.dataset.envUrl = envUrl
+      row.dataset.localUrl = localUrl
+      row.dataset.gameIdx = gameIdx
+      row.dataset.entryId = entry.id
+      row.dataset.tokenIdx = tokenIdx
+      row.dataset.envName = envName
 
-        const row = document.createElement('div')
-        row.className = 'game-env-row'
-        row.dataset.url = url
-        row.dataset.gameIdx = gameIdx
-        row.dataset.envIdx = envIdx
-        row.dataset.entryId = entry.id
-        row.dataset.tokenIdx = tokenIdx
+      const link = document.createElement('a')
+      link.href = envUrl
+      link.target = '_blank'
+      link.className = 'env-link'
+      link.textContent = game.name || '?'
 
-        const link = document.createElement('a')
-        link.href = url
-        link.target = '_blank'
-        link.className = 'env-link'
-        link.textContent = env.name
+      const copyEnvBtn = document.createElement('button')
+      copyEnvBtn.className = 'btn-icon btn-copy'
+      copyEnvBtn.title = 'Copy URL'
+      copyEnvBtn.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
+      copyEnvBtn.onclick = (e) => {
+        e.stopPropagation()
+        if (row.dataset.envUrl) copyUrl(row.dataset.envUrl)
+      }
 
-        const copyBtn = document.createElement('button')
-        copyBtn.className = 'btn-icon btn-copy'
-        copyBtn.title = 'Copy URL'
-        copyBtn.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>'
-        copyBtn.onclick = (e) => {
+      row.append(link, copyEnvBtn)
+
+      if (state.localUrl) {
+        const copyLocalBtn = document.createElement('button')
+        copyLocalBtn.className = 'btn-icon btn-copy btn-copy-local'
+        copyLocalBtn.title = 'Copy Local URL'
+        copyLocalBtn.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>'
+        copyLocalBtn.onclick = (e) => {
           e.stopPropagation()
-          const u = row.dataset.url
-          if (u) copyUrl(u)
+          if (row.dataset.localUrl) copyUrl(row.dataset.localUrl)
         }
+        row.appendChild(copyLocalBtn)
+      }
 
-        row.append(link, copyBtn)
-        col.appendChild(row)
-      })
-
+      col.appendChild(row)
       bar.appendChild(col)
     })
 
@@ -1007,32 +1178,150 @@ function renderTokenGroup(entry, token, tokenIdx) {
   return wrapper
 }
 
+function renderTokensByEnv(entry, body) {
+  let anyTokens = false
+  state.envs.forEach(env => {
+    const tokens = entry.tokens[env.name] || []
+    if (tokens.length === 0) return
+    anyTokens = true
+
+    const envSection = document.createElement('div')
+    envSection.className = 'collapsible env-section'
+    envSection.dataset.collapseId = entry.id + '-env-' + env.name
+
+    const envHeader = document.createElement('div')
+    envHeader.className = 'collapsible-header collapsed'
+    const caret = document.createElement('span')
+    caret.className = 'caret'
+    caret.textContent = '▼'
+    envHeader.appendChild(caret)
+    envHeader.appendChild(document.createTextNode(env.name))
+
+    const envBody = document.createElement('div')
+    envBody.className = 'collapsible-body'
+
+    tokens.forEach((token, tokenIdx) => {
+      envBody.appendChild(renderTokenGroup(entry, token, tokenIdx, env.name))
+    })
+
+    envSection.append(envHeader, envBody)
+    envHeader.onclick = () => toggleCollapsed(envHeader)
+    body.appendChild(envSection)
+  })
+  if (!anyTokens) {
+    body.appendChild(emptyMsg('No tokens in any environment.'))
+  }
+}
+
+function renderTokensByPlayer(entry, body) {
+  const pairs = []
+  state.envs.forEach(env => {
+    const tokens = entry.tokens[env.name] || []
+    tokens.forEach((token, tokenIdx) => {
+      pairs.push({ token, tokenIdx, envName: env.name })
+    })
+  })
+
+  if (pairs.length === 0) {
+    body.appendChild(emptyMsg('No tokens in any environment.'))
+    return
+  }
+
+  const groups = {}
+  pairs.forEach(p => {
+    const pn = p.token.playerName || '?'
+    if (!groups[pn]) groups[pn] = []
+    groups[pn].push(p)
+  })
+
+  const sortedGroups = Object.entries(groups).sort(([, a], [, b]) => {
+    const aLatest = Math.max(...a.map(p => p.token.createdAt || 0))
+    const bLatest = Math.max(...b.map(p => p.token.createdAt || 0))
+    return bLatest - aLatest
+  })
+
+  sortedGroups.forEach(([playerName, playerPairs]) => {
+    const playerSection = document.createElement('div')
+    playerSection.className = 'collapsible player-group'
+    const sectionId = entry.id + '-player-' + playerName
+    playerSection.dataset.collapseId = sectionId
+
+    const header = document.createElement('div')
+    header.className = 'collapsible-header collapsed'
+    const caret = document.createElement('span')
+    caret.className = 'caret'
+    caret.textContent = '▼'
+    header.appendChild(caret)
+    const nameContainer = document.createElement('span')
+    makeEditable(nameContainer, playerName, (val) => {
+      const e2 = state.entries.find(x => x.id === entry.id)
+      if (!e2) return
+      state.envs.forEach(env => {
+        const arr = e2.tokens[env.name]
+        if (arr) {
+          arr.forEach(t => {
+            if (t.playerName === playerName) t.playerName = val
+          })
+        }
+      })
+      saveState()
+    })
+    header.appendChild(nameContainer)
+
+    const delBtn = document.createElement('button')
+    delBtn.className = 'btn-icon'
+    delBtn.textContent = '✕'
+    delBtn.title = 'Delete all tokens for this player'
+    delBtn.style.marginLeft = 'auto'
+    delBtn.onclick = (e) => {
+      e.stopPropagation()
+      if (!confirm(`Delete all tokens for "${playerName}"?`)) return
+      setState(s => {
+        const e2 = s.entries.find(x => x.id === entry.id)
+        if (!e2) return
+        state.envs.forEach(env => {
+          const arr = e2.tokens[env.name]
+          if (arr) e2.tokens[env.name] = arr.filter(t => t.playerName !== playerName)
+        })
+      })
+    }
+    header.appendChild(delBtn)
+
+    const sectionBody = document.createElement('div')
+    sectionBody.className = 'collapsible-body'
+
+    playerPairs.forEach(p => {
+      sectionBody.appendChild(renderTokenGroup(entry, p.token, p.tokenIdx, p.envName, { headerLabel: p.envName }))
+    })
+
+    playerSection.append(header, sectionBody)
+    header.onclick = () => toggleCollapsed(header)
+    body.appendChild(playerSection)
+  })
+}
+
 
 // --- sync urls (lightweight, no full re-render) ---
 
 function syncUrls() {
-  document.querySelectorAll('.game-env-row').forEach(row => {
+  document.querySelectorAll('.game-token-row').forEach(row => {
     const gameIdx = +row.dataset.gameIdx
-    const envIdx = +row.dataset.envIdx
     const entryId = row.dataset.entryId
     const tokenIdx = +row.dataset.tokenIdx
+    const envName = row.dataset.envName
     const entry = state.entries.find(e => e.id === entryId)
-    const token = entry?.tokens?.[tokenIdx]
+    const env = state.envs.find(e => e.name === envName)
+    const token = entry?.tokens?.[envName]?.[tokenIdx]
     const game = state.games[gameIdx]
-    if (!entry || !token || !game) return
+    if (!entry || !token || !game || !env) return
 
-    let url
-    if (envIdx === -2) {
-      url = buildLocalUrl(game, entry, token)
-    } else {
-      const env = state.envs[envIdx]
-      if (!env) return
-      url = buildUrl(game, env, entry, token)
-    }
+    const envUrl = buildUrl(game, env, entry, token)
+    const localUrl = state.localUrl ? buildLocalUrl(game, entry, token) : ''
 
-    row.dataset.url = url
+    row.dataset.envUrl = envUrl
+    row.dataset.localUrl = localUrl
     const link = row.querySelector('.env-link')
-    if (link) link.href = url
+    if (link) { link.href = envUrl; link.textContent = game.name || '?' }
   })
 }
 
@@ -1044,6 +1333,22 @@ function syncPlaceholders() {
   if (addRedir) addRedir.placeholder = state.globalRedirectUrl || 'Redirect URL'
   const envAdd = document.getElementById('envDomainAdd')
   if (envAdd) envAdd.placeholder = state.globalDomain || 'domain'
+}
+
+function syncEnvSelects() {
+  document.querySelectorAll('.env-select').forEach(select => {
+    const val = select.value
+    select.innerHTML = ''
+    state.envs.forEach(env => {
+      const opt = document.createElement('option')
+      opt.value = env.name
+      opt.textContent = env.name
+      select.appendChild(opt)
+    })
+    if ([...select.options].some(o => o.value === val)) {
+      select.value = val
+    }
+  })
 }
 
 // --- helpers ---
